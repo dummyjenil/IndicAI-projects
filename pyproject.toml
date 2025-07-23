@@ -1,0 +1,24 @@
+[project]
+name = "indicai-projects"
+version = "0.2.0"
+description = "IndicAI projects like ASR,TTS,Translation Etc"
+readme = "README.md"
+authors = [
+    { name = "dummyjenil", email = "dummyjenil@gmail.com" }
+]
+dependencies = []
+
+[project.optional-dependencies]
+lang_detection = ["pandas","fasttext","torch"]
+transliteration_rnn = ["torch","numpy"]
+transliteration_transformer = ["urduhack","indic_nlp_library","fairseq-fixed","keras==2.15.0","tensorflow==2.15.0"]
+text2text_translation = ["torch","transformers","indic_nlp_library","sacremoses","sacrebleu","sentencepiece","einops"]
+speech2text_all = ["librosa","onnxruntime","numpy","torch"]
+sanskrit_tts = ["numpy","torch","soundfile"]
+indic_tts = ["tts==0.22.0","huggingface_hub"]
+lite_tts = ["torch","transformers","soundfile"]
+speech2text_translation = ["numpy","pydub","einops","transformers","sentencepiece"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
