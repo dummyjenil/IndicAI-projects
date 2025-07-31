@@ -1,5 +1,5 @@
 ```bash
-IndicAI-projects[lang_detection,text2text_translation,transliteration_rnn,transliteration_transformer]
+IndicAI-projects[lang_detection,text2text_translation,krutrim_text2text_translation,transliteration_rnn,transliteration_transformer]
 ```
 
 ```python
@@ -10,7 +10,8 @@ from torch import device as Device
 from torch.cuda import is_available as cuda_is_available
 from transformers import AutoTokenizer
 from indicai_projects.lang_detection import IndicLangDet
-from indicai_projects.text2text_translation import IndicTrans
+from indicai_projects.text2text_translation import IndicTrans as IndicTrans_OLD
+from indicai_projects.krutrim_text2text_translation import IndicTrans
 from indicai_projects.transliteration_rnn import Transliteration_RNN , rnn_conf
 from indicai_projects.transliteration_transformer import Transliteration_Transformer
 
@@ -21,7 +22,8 @@ LID_model = IndicLangDet(hf_hub_download("ai4bharat/IndicLID-BERT","basline_nn_s
 en2indic_RNN_model = Transliteration_RNN(hf_hub_download("shethjenil/Indic-Transliteration-RNN", rnn_conf[en2indic_rnn_lang]["weight"]) ,hf_hub_download("shethjenil/Indic-Transliteration-RNN", rnn_conf[en2indic_rnn_lang]["script"]),hf_hub_download("shethjenil/Indic-Transliteration-RNN", rnn_conf[en2indic_rnn_lang]["vocab"]),device)
 en2indic_model = Transliteration_Transformer({en2indic_lang:hf_hub_download("shethjenil/Indic-Transliteration-Word-Prob-Dicts",f"{en2indic_lang}_word_prob_dict.json")},hf_hub_download("ai4bharat/IndicXlit","indicxlit-en-indic-v1.0/transformer/indicxlit.pt"),hf_hub_download("shethjenil/Indic-Transliteration-Word-Prob-Dicts", "corpus.zip"),{en2indic_lang},device)
 indic2en_model = Transliteration_Transformer({"en":hf_hub_download("shethjenil/Indic-Transliteration-Word-Prob-Dicts","en_word_prob_dict.json")},hf_hub_download("ai4bharat/IndicXlit","indicxlit-indic-en-v1.0/transformer/indicxlit.pt"),hf_hub_download("shethjenil/Indic-Transliteration-Word-Prob-Dicts", "corpus.zip"),{"en"},device)
-indic_trans_model = IndicTrans("prajdabre/rotary-indictrans2-en-indic-dist-200M","prajdabre/rotary-indictrans2-indic-en-dist-200M","ai4bharat/indictrans2-indic-indic-dist-320M")
+indic_trans_model = IndicTrans(device)
+indic_trans_model_old = IndicTrans_OLD()
 
 gr.TabbedInterface(
     [
@@ -30,13 +32,15 @@ gr.TabbedInterface(
         gr.Interface(lambda word, topk: en2indic_model._transliterate_word(word, "en", en2indic_lang, topk, nativize_numerals=True),[gr.Textbox(label="Enter Word"),gr.Number(label="Enter Variation Number", value=1),],gr.List(label="Transliteration Result"),title=f"En2Indic Transliteration",),
         gr.Interface(lambda word, topk, indic2en_lang: indic2en_model._transliterate_word(word, indic2en_lang, "en", topk, nativize_numerals=True),[gr.Textbox(label="Enter Word"),gr.Number(label="Enter Variation Number", value=1),gr.Dropdown(indic2en_model.all_supported_langs,label="input lang")],gr.List(label="Transliteration Result"),title="Indic2En Transliteration",),
         gr.Interface(indic_trans_model.predict,[gr.Textbox(label="Input Text"),gr.Dropdown(indic_trans_model.all_lang, label="Source Language"),gr.Dropdown(indic_trans_model.all_lang, label="Target Language")],gr.Textbox(label="Result")),
+        gr.Interface(indic_trans_model_old.predict,[gr.Textbox(label="Input Text"),gr.Dropdown(indic_trans_model_old.all_lang, label="Source Language"),gr.Dropdown(indic_trans_model_old.all_lang, label="Target Language")],gr.Textbox(label="Result")),
     ],
     [
         "Language Detection",
         f"RNN en2{en2indic_rnn_lang} Transliteration",
         f"TRANSFORMER en2{en2indic_lang} Transliteration",
         "Indic2en Transliteration",
-        "Text Translatation"
+        "Text Translatation (Fast)",
+        "Text Translatation OLD",
     ],
 ).launch()
 

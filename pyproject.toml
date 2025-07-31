@@ -1,6 +1,6 @@
 [project]
 name = "indicai-projects"
-version = "0.2.0"
+version = "0.2.1"
 description = "IndicAI projects like ASR,TTS,Translation Etc"
 readme = "README.md"
 authors = [
@@ -13,6 +13,7 @@ lang_detection = ["pandas","fasttext","torch"]
 transliteration_rnn = ["torch","numpy"]
 transliteration_transformer = ["urduhack","indic_nlp_library","fairseq-fixed","keras==2.15.0","tensorflow==2.15.0"]
 text2text_translation = ["torch","transformers","indic_nlp_library","sacremoses","sacrebleu","sentencepiece","einops"]
+krutrim_text2text_translation = ["indic-nlp-library","mosestokenizer","sacremoses","ctranslate2"]
 speech2text_all = ["librosa","onnxruntime","numpy","torch"]
 sanskrit_tts = ["numpy","torch","soundfile"]
 indic_tts = ["tts==0.22.0","huggingface_hub"]
