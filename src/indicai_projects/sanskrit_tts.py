@@ -1526,31 +1526,15 @@ def sanskrit_cleaners(text):
         text += ' ।'
     return text
 
-class SansTTS:
+class SansTTS(SynthesizerTrn):
   def __init__(self,model_path,device):
     self.conf = {'train': {'segment_size': 8192}, 'data': {'max_wav_value': 32768.0, 'sampling_rate': 22050, 'filter_length': 1024, 'hop_length': 256, 'win_length': 1024, 'add_blank': True, 'n_speakers': 27}, 'model': {'inter_channels': 192, 'hidden_channels': 192, 'filter_channels': 768, 'n_heads': 2, 'n_layers': 6, 'kernel_size': 3, 'p_dropout': 0.1, 'resblock': '1', 'resblock_kernel_sizes': [3, 7, 11], 'resblock_dilation_sizes': [[1, 3, 5], [1, 3, 5], [1, 3, 5]], 'upsample_rates': [8, 8, 2, 2], 'upsample_initial_channel': 512, 'upsample_kernel_sizes': [16, 16, 4, 4], 'n_layers_q': 3, 'use_spectral_norm': False, 'gin_channels': 256}, 'speakers': ['Male 1', 'Male 2', 'Male 3', 'Male 4 (Malayalam)', 'Male 5', 'Male 6', 'Male 7', 'Male 8 (Kannada)', 'Female 1 (Tamil)', 'Male 9 (Kannada)', 'Female 2 (Marathi)', 'Female 3 (Marathi)', 'Female 4 (Marathi)', 'Female 5 (Telugu)', 'Female 6 (Telugu)', 'Male 10 (Kannada)', 'Male 11 (Kannada)', 'Male 12', 'Male 13', 'Male 14', 'Male 15', 'Female 7', 'Male 16 (Malayalam)', 'Male 17 (Tamil)', 'Male 18 (Hindi)', 'Male 19 (Telugu)', 'Male 20 (Hindi)'], 'symbols': ['_', '।', 'ँ', 'ं', 'ः', 'अ', 'आ', 'इ', 'ई', 'उ', 'ऊ', 'ऋ', 'ए', 'ऐ', 'ओ', 'औ', 'क', 'ख', 'ग', 'घ', 'ङ', 'च', 'छ', 'ज', 'झ', 'ञ', 'ट', 'ठ', 'ड', 'ढ', 'ण', 'त', 'थ', 'द', 'ध', 'न', 'प', 'फ', 'ब', 'भ', 'म', 'य', 'र', 'ल', 'ळ', 'व', 'श', 'ष', 'स', 'ह', 'ऽ', 'ा', 'ि', 'ी', 'ु', 'ू', 'ृ', 'ॄ', 'े', 'ै', 'ो', 'ौ', '्', 'ॠ', 'ॢ', ' ']}
     self.symbol_to_id = {s: i for i, s in enumerate(self.conf["symbols"])}
+    super().__init__(len(self.symbol_to_id),self.conf["data"]["filter_length"] // 2 + 1,self.conf["train"]["segment_size"] // self.conf["data"]["hop_length"],n_speakers=self.conf["data"]["n_speakers"],**self.conf["model"])
+    self.load_state_dict(torch.load(model_path, map_location='cpu'))
+    self.to(device)
+    self.eval()
     self.speakers = self.conf["speakers"]
-    self.model = SynthesizerTrn(len(self.symbol_to_id),self.conf["data"]["filter_length"] // 2 + 1,self.conf["train"]["segment_size"] // self.conf["data"]["hop_length"],n_speakers=self.conf["data"]["n_speakers"],**self.conf["model"])
-    checkpoint_dict = torch.load(model_path, map_location='cpu')
-    saved_state_dict = checkpoint_dict['model']
-    if hasattr(self.model, 'module'):
-      state_dict = self.model.module.state_dict()
-    else:
-      state_dict = self.model.state_dict()
-    new_state_dict= {}
-    for k, v in state_dict.items():
-      try:
-        new_state_dict[k] = saved_state_dict[k]
-      except:
-        print("%s is not in the checkpoint" % k)
-        new_state_dict[k] = v
-    if hasattr(self.model, 'module'):
-      self.model.module.load_state_dict(new_state_dict)
-    else:
-      self.model.load_state_dict(new_state_dict)
-    self.model.to(device)
-    self.model.eval()
 
   def get_text(self,text):
     text_norm = [self.symbol_to_id[symbol] for symbol in sanskrit_cleaners(text.replace('\n', '').replace('॥', '।').replace('ॐ', 'ओम्')) if symbol in self.symbol_to_id]
@@ -1561,6 +1545,6 @@ class SansTTS:
   def predict(self,text:str, speaker_id=0, length_scale=1.0,save_path="output.wav"):
       stn_tst = LongTensor(self.get_text(text))
       with torch.no_grad():
-          audio = self.model.infer(stn_tst.unsqueeze(0),LongTensor([stn_tst.size(0)]),LongTensor([speaker_id]),0.667,1/length_scale,0.8)[0][0, 0].data.cpu().float().numpy()
+          audio = self.infer(stn_tst.unsqueeze(0),LongTensor([stn_tst.size(0)]),LongTensor([speaker_id]),0.667,1/length_scale,0.8)[0][0, 0].data.cpu().float().numpy()
       sf.write(save_path, audio, self.conf["data"]["sampling_rate"])
       return save_path

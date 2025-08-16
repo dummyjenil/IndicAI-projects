@@ -1,6 +1,6 @@
 [project]
 name = "indicai-projects"
-version = "0.2.2"
+version = "0.2.3"
 description = "IndicAI projects like ASR,TTS,Translation Etc"
 readme = "README.md"
 authors = [
