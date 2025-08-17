@@ -76,7 +76,7 @@ indic_seamless_model = INDIC_SEAMLESS(device)
 gr.TabbedInterface(
     [
         gr.Interface(indic_tts.predict,[gr.Textbox(label="Enter Text"),gr.Dropdown(indic_tts.speakers, label="speaker"),],gr.Audio(type="filepath", label="Speech")),
-        gr.Interface(sans_tts_model.predict,[gr.Textbox(value="उद्यमेन हि सिध्यन्ति कार्याणि न मनोरथैः"),gr.Dropdown(sans_tts_model.speakers,label='Speaker',type='index'),gr.Slider(0.5,2,1,step=0.1,label='Speaking Speed')],gr.Audio(label="Speech")),
+        gr.Interface(sans_tts_model.predict,[gr.Textbox(value="उद्यमेन हि सिध्यन्ति कार्याणि न मनोरथैः"),gr.Dropdown(sans_tts_model.speakers,label='Speaker'),gr.Slider(0.5,2,1,step=0.1,label='Speaking Speed')],gr.Audio(label="Speech")),
         gr.Interface(vits_tts.predict,[gr.Textbox(),gr.Dropdown(vits_tts.speakers,label='Speaker'),gr.Dropdown(vits_tts.styles,label='Style')],gr.Audio(label="Speech")),
         gr.Interface(indic_seamless_model.predict,[gr.Audio(type="filepath"),gr.Dropdown(list(indic_seamless_model.lang_conf.keys()), label="Target Language"),],gr.Text(label="Translations"),title="Audio Translation",),
         gr.Interface(indic_stt_all_model.predict,[gr.Audio(type="filepath"),gr.Dropdown(indic_stt_all_model.supported_langs,label='Language')],[gr.Text(label="CTC"),gr.Text(label="RNNT")]),

@@ -1,19 +1,135 @@
-from numpy import float32 , zeros, int32, float32, log as np_log , exp as np_exp
-import numba
 import math
-from torch import LongTensor
 from torch import nn
 from torch.nn import functional as F
-from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
+from torch.nn.utils import remove_weight_norm, spectral_norm , parametrizations
 import torch
 import torch.jit
-import soundfile as sf
 
 DEFAULT_MIN_BIN_WIDTH = 1e-3
 DEFAULT_MIN_BIN_HEIGHT = 1e-3
 DEFAULT_MIN_DERIVATIVE = 1e-3
 LRELU_SLOPE = 0.1
 
+
+
+def slice_segments(x, ids_str, segment_size=4):
+  ret = torch.zeros_like(x[:, :, :segment_size])
+  for i in range(x.size(0)):
+    idx_str = ids_str[i]
+    idx_end = idx_str + segment_size
+    ret[i] = x[i, :, idx_str:idx_end]
+  return ret
+
+
+def rand_slice_segments(x, x_lengths=None, segment_size=4):
+  b, d, t = x.size()
+  if x_lengths is None:
+    x_lengths = t
+  ids_str_max = x_lengths - segment_size + 1
+  ids_str = (torch.rand([b]).to(device=x.device) * ids_str_max).to(dtype=torch.long)
+  ret = slice_segments(x, ids_str, segment_size)
+  return ret, ids_str
+
+
+def subsequent_mask(length):
+  mask = torch.tril(torch.ones(length, length)).unsqueeze(0).unsqueeze(0)
+  return mask
+
+
+@torch.jit.script
+def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
+  n_channels_int = n_channels[0]
+  in_act = input_a + input_b
+  t_act = torch.tanh(in_act[:, :n_channels_int, :])
+  s_act = torch.sigmoid(in_act[:, n_channels_int:, :])
+  acts = t_act * s_act
+  return acts
+
+
+def convert_pad_shape(pad_shape):
+  l = pad_shape[::-1]
+  pad_shape = [item for sublist in l for item in sublist]
+  return pad_shape
+
+
+def sequence_mask(length, max_length=None):
+  if max_length is None:
+    max_length = length.max()
+  x = torch.arange(max_length, dtype=length.dtype, device=length.device)
+  return x.unsqueeze(0) < length.unsqueeze(1)
+
+def script_method(fn, _rcb=None):
+  return fn
+
+
+def script(obj, optimize=True, _frames_up=0, _rcb=None):
+  return obj
+
+
+torch.jit.script_method = script_method
+torch.jit.script = script
+
+
+def init_weights(m, mean=0.0, std=0.01):
+  classname = m.__class__.__name__
+  if classname.find("Conv") != -1:
+    m.weight.data.normal_(mean, std)
+
+
+def get_padding(kernel_size, dilation=1):
+  return int((kernel_size*dilation - dilation)/2)
+
+# import numba
+# from numpy import float32 , zeros, int32
+# @numba.jit(numba.void(numba.int32[:,:,::1], numba.float32[:,:,::1], numba.int32[::1], numba.int32[::1]), nopython=True, nogil=True)
+# def maximum_path_jit(paths, values, t_ys, t_xs):
+#   b = paths.shape[0]
+#   max_neg_val=-1e9
+#   for i in range(int(b)):
+#     path = paths[i]
+#     value = values[i]
+#     t_y = t_ys[i]
+#     t_x = t_xs[i]
+
+#     v_prev = v_cur = 0.0
+#     index = t_x - 1
+
+#     for y in range(t_y):
+#       for x in range(max(0, t_x + y - t_y), min(t_x, y + 1)):
+#         if x == y:
+#           v_cur = max_neg_val
+#         else:
+#           v_cur = value[y-1, x]
+#         if x == 0:
+#           if y == 0:
+#             v_prev = 0.
+#           else:
+#             v_prev = max_neg_val
+#         else:
+#           v_prev = value[y-1, x-1]
+#         value[y, x] += max(v_prev, v_cur)
+
+#     for y in range(t_y - 1, -1, -1):
+#       path[y, index] = 1
+#       if index != 0 and (index == y or value[y-1, index] < value[y-1, index-1]):
+#         index = index - 1
+
+# def maximum_path(neg_cent, mask):
+#   """ numba optimized version.
+#   neg_cent: [b, t_t, t_s]
+#   mask: [b, t_t, t_s]
+#   """
+#   device = neg_cent.device
+#   dtype = neg_cent.dtype
+#   neg_cent = neg_cent.data.cpu().numpy().astype(float32)
+#   path = zeros(neg_cent.shape, dtype=int32)
+
+#   t_t_max = mask.sum(1)[:, 0].data.cpu().numpy().astype(int32)
+#   t_s_max = mask.sum(2)[:, 0].data.cpu().numpy().astype(int32)
+#   maximum_path_jit(path, neg_cent, t_t_max, t_s_max)
+#   return torch.from_numpy(path).to(device=device, dtype=dtype)
+
+from numpy import log as np_log , exp as np_exp
 
 def piecewise_rational_quadratic_transform(inputs, 
                                            unnormalized_widths,
@@ -49,14 +165,12 @@ def piecewise_rational_quadratic_transform(inputs,
     )
     return outputs, logabsdet
 
-
 def searchsorted(bin_locations, inputs, eps=1e-6):
     bin_locations[..., -1] += eps
     return torch.sum(
         inputs[..., None] >= bin_locations,
         dim=-1
     ) - 1
-
 
 def unconstrained_rational_quadratic_spline(inputs,
                                             unnormalized_widths,
@@ -198,9 +312,6 @@ def rational_quadratic_spline(inputs,
 
         return outputs, logabsdet
 
-
-
-
 class LayerNorm(nn.Module):
   def __init__(self, channels, eps=1e-5):
     super().__init__()
@@ -215,7 +326,6 @@ class LayerNorm(nn.Module):
     x = F.layer_norm(x, (self.channels,), self.gamma, self.beta, self.eps)
     return x.transpose(1, -1)
 
- 
 class ConvReluNorm(nn.Module):
   def __init__(self, in_channels, hidden_channels, out_channels, kernel_size, n_layers, p_dropout):
     super().__init__()
@@ -249,7 +359,6 @@ class ConvReluNorm(nn.Module):
       x = self.relu_drop(x)
     x = x_org + self.proj(x)
     return x * x_mask
-
 
 class DDSConv(nn.Module):
   """
@@ -291,7 +400,6 @@ class DDSConv(nn.Module):
       x = x + y
     return x * x_mask
 
-
 class WN(nn.Module):
   def __init__(self, hidden_channels, kernel_size, dilation_rate, n_layers, gin_channels=0, p_dropout=0):
     super(WN, self).__init__()
@@ -309,14 +417,14 @@ class WN(nn.Module):
 
     if gin_channels != 0:
       cond_layer = nn.Conv1d(gin_channels, 2*hidden_channels*n_layers, 1)
-      self.cond_layer = nn.utils.weight_norm(cond_layer, name='weight')
+      self.cond_layer = parametrizations.weight_norm(cond_layer, name='weight')
 
     for i in range(n_layers):
       dilation = dilation_rate ** i
       padding = int((kernel_size * dilation - dilation) / 2)
       in_layer = nn.Conv1d(hidden_channels, 2*hidden_channels, kernel_size,
                                  dilation=dilation, padding=padding)
-      in_layer = nn.utils.weight_norm(in_layer, name='weight')
+      in_layer = parametrizations.weight_norm(in_layer, name='weight')
       self.in_layers.append(in_layer)
 
       # last one is not necessary
@@ -326,7 +434,7 @@ class WN(nn.Module):
         res_skip_channels = hidden_channels
 
       res_skip_layer = nn.Conv1d(hidden_channels, res_skip_channels, 1)
-      res_skip_layer = nn.utils.weight_norm(res_skip_layer, name='weight')
+      res_skip_layer = parametrizations.weight_norm(res_skip_layer, name='weight')
       self.res_skip_layers.append(res_skip_layer)
 
   def forward(self, x, x_mask, g=None, **kwargs):
@@ -367,26 +475,25 @@ class WN(nn.Module):
     for l in self.res_skip_layers:
      nn.utils.remove_weight_norm(l)
 
-
 class ResBlock1(nn.Module):
     def __init__(self, channels, kernel_size=3, dilation=(1, 3, 5)):
         super(ResBlock1, self).__init__()
         self.convs1 = nn.ModuleList([
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[0],
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[0],
                                padding=get_padding(kernel_size, dilation[0]))),
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[1],
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[1],
                                padding=get_padding(kernel_size, dilation[1]))),
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[2],
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[2],
                                padding=get_padding(kernel_size, dilation[2])))
         ])
         self.convs1.apply(init_weights)
 
         self.convs2 = nn.ModuleList([
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=1,
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=1,
                                padding=get_padding(kernel_size, 1))),
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=1,
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=1,
                                padding=get_padding(kernel_size, 1))),
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=1,
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=1,
                                padding=get_padding(kernel_size, 1)))
         ])
         self.convs2.apply(init_weights)
@@ -412,14 +519,13 @@ class ResBlock1(nn.Module):
         for l in self.convs2:
             remove_weight_norm(l)
 
-
 class ResBlock2(nn.Module):
     def __init__(self, channels, kernel_size=3, dilation=(1, 3)):
         super(ResBlock2, self).__init__()
         self.convs = nn.ModuleList([
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[0],
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[0],
                                padding=get_padding(kernel_size, dilation[0]))),
-            weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[1],
+            parametrizations.weight_norm(nn.Conv1d(channels, channels, kernel_size, 1, dilation=dilation[1],
                                padding=get_padding(kernel_size, dilation[1])))
         ])
         self.convs.apply(init_weights)
@@ -439,7 +545,6 @@ class ResBlock2(nn.Module):
         for l in self.convs:
             remove_weight_norm(l)
 
-
 class Log(nn.Module):
   def forward(self, x, x_mask, reverse=False, **kwargs):
     if not reverse:
@@ -449,7 +554,6 @@ class Log(nn.Module):
     else:
       x = torch.exp(x) * x_mask
       return x
-    
 
 class Flip(nn.Module):
   def forward(self, x, *args, reverse=False, **kwargs):
@@ -459,7 +563,6 @@ class Flip(nn.Module):
       return x, logdet
     else:
       return x
-
 
 class ElementwiseAffine(nn.Module):
   def __init__(self, channels):
@@ -477,7 +580,6 @@ class ElementwiseAffine(nn.Module):
     else:
       x = (x - self.m) * torch.exp(-self.logs) * x_mask
       return x
-
 
 class ResidualCouplingLayer(nn.Module):
   def __init__(self,
@@ -526,7 +628,6 @@ class ResidualCouplingLayer(nn.Module):
       x = torch.cat([x0, x1], 1)
       return x
 
-
 class ConvFlow(nn.Module):
   def __init__(self, in_channels, filter_channels, kernel_size, n_layers, num_bins=10, tail_bound=5.0):
     super().__init__()
@@ -573,7 +674,6 @@ class ConvFlow(nn.Module):
     else:
         return x
 
-
 class Encoder(nn.Module):
   def __init__(self, hidden_channels, filter_channels, n_heads, n_layers, kernel_size=1, p_dropout=0., window_size=4, **kwargs):
     super().__init__()
@@ -609,7 +709,6 @@ class Encoder(nn.Module):
       x = self.norm_layers_2[i](x + y)
     x = x * x_mask
     return x
-
 
 class Decoder(nn.Module):
   def __init__(self, hidden_channels, filter_channels, n_heads, n_layers, kernel_size=1, p_dropout=0., proximal_bias=False, proximal_init=True, **kwargs):
@@ -660,7 +759,6 @@ class Decoder(nn.Module):
       x = self.norm_layers_2[i](x + y)
     x = x * x_mask
     return x
-
 
 class MultiHeadAttention(nn.Module):
   def __init__(self, channels, out_channels, n_heads, p_dropout=0., window_size=None, heads_share=True, block_length=None, proximal_bias=False, proximal_init=False):
@@ -817,7 +915,6 @@ class MultiHeadAttention(nn.Module):
     diff = torch.unsqueeze(r, 0) - torch.unsqueeze(r, 1)
     return torch.unsqueeze(torch.unsqueeze(-torch.log1p(torch.abs(diff)), 0), 0)
 
-
 class FFN(nn.Module):
   def __init__(self, in_channels, out_channels, filter_channels, kernel_size, p_dropout=0., activation=None, causal=False):
     super().__init__()
@@ -865,57 +962,6 @@ class FFN(nn.Module):
     padding = [[0, 0], [0, 0], [pad_l, pad_r]]
     x = F.pad(x, convert_pad_shape(padding))
     return x
-
-
-
-@numba.jit(numba.void(numba.int32[:,:,::1], numba.float32[:,:,::1], numba.int32[::1], numba.int32[::1]), nopython=True, nogil=True)
-def maximum_path_jit(paths, values, t_ys, t_xs):
-  b = paths.shape[0]
-  max_neg_val=-1e9
-  for i in range(int(b)):
-    path = paths[i]
-    value = values[i]
-    t_y = t_ys[i]
-    t_x = t_xs[i]
-
-    v_prev = v_cur = 0.0
-    index = t_x - 1
-
-    for y in range(t_y):
-      for x in range(max(0, t_x + y - t_y), min(t_x, y + 1)):
-        if x == y:
-          v_cur = max_neg_val
-        else:
-          v_cur = value[y-1, x]
-        if x == 0:
-          if y == 0:
-            v_prev = 0.
-          else:
-            v_prev = max_neg_val
-        else:
-          v_prev = value[y-1, x-1]
-        value[y, x] += max(v_prev, v_cur)
-
-    for y in range(t_y - 1, -1, -1):
-      path[y, index] = 1
-      if index != 0 and (index == y or value[y-1, index] < value[y-1, index-1]):
-        index = index - 1
-
-def maximum_path(neg_cent, mask):
-  """ numba optimized version.
-  neg_cent: [b, t_t, t_s]
-  mask: [b, t_t, t_s]
-  """
-  device = neg_cent.device
-  dtype = neg_cent.dtype
-  neg_cent = neg_cent.data.cpu().numpy().astype(float32)
-  path = zeros(neg_cent.shape, dtype=int32)
-
-  t_t_max = mask.sum(1)[:, 0].data.cpu().numpy().astype(int32)
-  t_s_max = mask.sum(2)[:, 0].data.cpu().numpy().astype(int32)
-  maximum_path_jit(path, neg_cent, t_t_max, t_s_max)
-  return torch.from_numpy(path).to(device=device, dtype=dtype)
-
 
 class StochasticDurationPredictor(nn.Module):
   def __init__(self, in_channels, filter_channels, kernel_size, p_dropout, n_flows=4, gin_channels=0):
@@ -1151,7 +1197,7 @@ class Generator(nn.Module):
 
         self.ups = nn.ModuleList()
         for i, (u, k) in enumerate(zip(upsample_rates, upsample_kernel_sizes)):
-            self.ups.append(weight_norm(
+            self.ups.append(parametrizations.weight_norm(
                 nn.ConvTranspose1d(upsample_initial_channel//(2**i), upsample_initial_channel//(2**(i+1)),
                                 k, u, padding=(k-u)//2)))
 
@@ -1200,7 +1246,7 @@ class DiscriminatorP(nn.Module):
         super(DiscriminatorP, self).__init__()
         self.period = period
         self.use_spectral_norm = use_spectral_norm
-        norm_f = weight_norm if use_spectral_norm == False else spectral_norm
+        norm_f = parametrizations.weight_norm if use_spectral_norm == False else spectral_norm
         self.convs = nn.ModuleList([
             norm_f(nn.Conv2d(1, 32, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
             norm_f(nn.Conv2d(32, 128, (kernel_size, 1), (stride, 1), padding=(get_padding(kernel_size, 1), 0))),
@@ -1234,7 +1280,7 @@ class DiscriminatorP(nn.Module):
 class DiscriminatorS(nn.Module):
     def __init__(self, use_spectral_norm=False):
         super(DiscriminatorS, self).__init__()
-        norm_f = weight_norm if use_spectral_norm == False else spectral_norm
+        norm_f = parametrizations.weight_norm if use_spectral_norm == False else spectral_norm
         self.convs = nn.ModuleList([
             norm_f(nn.Conv1d(1, 16, 15, 1, padding=7)),
             norm_f(nn.Conv1d(16, 64, 41, 4, groups=4, padding=20)),
@@ -1351,47 +1397,47 @@ class SynthesizerTrn(nn.Module):
     if n_speakers > 1:
       self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
-  def forward(self, x, x_lengths, y, y_lengths, sid=None):
+  # def forward(self, x, x_lengths, y, y_lengths, sid=None):
 
-    x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-    if self.n_speakers > 0:
-      g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
-    else:
-      g = None
+  #   x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
+  #   if self.n_speakers > 0:
+  #     g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
+  #   else:
+  #     g = None
 
-    z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
-    z_p = self.flow(z, y_mask, g=g)
+  #   z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
+  #   z_p = self.flow(z, y_mask, g=g)
 
-    with torch.no_grad():
-      # negative cross-entropy
-      s_p_sq_r = torch.exp(-2 * logs_p) # [b, d, t]
-      neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True) # [b, 1, t_s]
-      neg_cent2 = torch.matmul(-0.5 * (z_p ** 2).transpose(1, 2), s_p_sq_r) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-      neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r)) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-      neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True) # [b, 1, t_s]
-      neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
+  #   with torch.no_grad():
+  #     # negative cross-entropy
+  #     s_p_sq_r = torch.exp(-2 * logs_p) # [b, d, t]
+  #     neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - logs_p, [1], keepdim=True) # [b, 1, t_s]
+  #     neg_cent2 = torch.matmul(-0.5 * (z_p ** 2).transpose(1, 2), s_p_sq_r) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
+  #     neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r)) # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
+  #     neg_cent4 = torch.sum(-0.5 * (m_p ** 2) * s_p_sq_r, [1], keepdim=True) # [b, 1, t_s]
+  #     neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
 
-      attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-      attn = maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
+  #     attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
+  #     attn = maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
 
-    w = attn.sum(2)
-    if self.use_sdp:
-      l_length = self.dp(x, x_mask, w, g=g)
-      l_length = l_length / torch.sum(x_mask)
-    else:
-      logw_ = torch.log(w + 1e-6) * x_mask
-      logw = self.dp(x, x_mask, g=g)
-      l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask) # for averaging 
+  #   w = attn.sum(2)
+  #   if self.use_sdp:
+  #     l_length = self.dp(x, x_mask, w, g=g)
+  #     l_length = l_length / torch.sum(x_mask)
+  #   else:
+  #     logw_ = torch.log(w + 1e-6) * x_mask
+  #     logw = self.dp(x, x_mask, g=g)
+  #     l_length = torch.sum((logw - logw_)**2, [1,2]) / torch.sum(x_mask) # for averaging 
 
-    # expand prior
-    m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-    logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+  #   # expand prior
+  #   m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
+  #   logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
 
-    z_slice, ids_slice = rand_slice_segments(z, y_lengths, self.segment_size)
-    o = self.dec(z_slice, g=g)
-    return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
+  #   z_slice, ids_slice = rand_slice_segments(z, y_lengths, self.segment_size)
+  #   o = self.dec(z_slice, g=g)
+  #   return o, l_length, attn, ids_slice, x_mask, y_mask, (z, z_p, m_p, logs_p, m_q, logs_q)
 
-  def infer(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
+  def forward(self, x, x_lengths, sid=None, noise_scale=1, length_scale=1, noise_scale_w=1., max_len=None):
     x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
     if self.n_speakers > 0:
       g = self.emb_g(sid).unsqueeze(-1) # [b, h, 1]
@@ -1407,7 +1453,7 @@ class SynthesizerTrn(nn.Module):
     y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
     y_mask = torch.unsqueeze(sequence_mask(y_lengths, None), 1).to(x_mask.dtype)
     attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-    attn = generate_path(w_ceil, attn_mask)
+    attn = self.generate_path(w_ceil, attn_mask)
 
     m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2) # [b, t', t], [b, t, d] -> [b, d, t']
     logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2) # [b, t', t], [b, t, d] -> [b, d, t']
@@ -1427,124 +1473,49 @@ class SynthesizerTrn(nn.Module):
     o_hat = self.dec(z_hat * y_mask, g=g_tgt)
     return o_hat, y_mask, (z, z_p, z_hat)
 
-
-def script_method(fn, _rcb=None):
-  return fn
-
-
-def script(obj, optimize=True, _frames_up=0, _rcb=None):
-  return obj
-
-
-torch.jit.script_method = script_method
-torch.jit.script = script
-
-
-def init_weights(m, mean=0.0, std=0.01):
-  classname = m.__class__.__name__
-  if classname.find("Conv") != -1:
-    m.weight.data.normal_(mean, std)
+  def generate_path(self,duration, mask):
+    """
+    duration: [b, 1, t_x]
+    mask: [b, 1, t_y, t_x]
+    """
+    b, _, t_y, t_x = mask.shape
+    cum_duration = torch.cumsum(duration, -1)
+    
+    cum_duration_flat = cum_duration.view(b * t_x)
+    path = sequence_mask(cum_duration_flat, t_y).to(mask.dtype)
+    path = path.view(b, t_x, t_y)
+    path = path - F.pad(path, convert_pad_shape([[0, 0], [1, 0], [0, 0]]))[:, :-1]
+    path = path.unsqueeze(1).transpose(2,3) * mask
+    return path
 
 
-def get_padding(kernel_size, dilation=1):
-  return int((kernel_size*dilation - dilation)/2)
 
+def intersperse_tensor(lst: torch.Tensor, item: int) -> torch.Tensor:
+    n = lst.size(0)
+    result = torch.full((2 * n + 1,), item, dtype=torch.long, device=lst.device)
+    result[1::2] = lst
+    return result
 
-def intersperse(lst, item):
-  result = [item] * (len(lst) * 2 + 1)
-  result[1::2] = lst
-  return result
+class SansTTS(nn.Module):
+    def __init__(self):
+        super().__init__()
+        conf = {'segment_size': 8192, 'filter_length': 1024, 'hop_length': 256, 'model': {'inter_channels': 192, 'hidden_channels': 192, 'filter_channels': 768, 'n_heads': 2, 'n_layers': 6, 'kernel_size': 3, 'p_dropout': 0.1, 'resblock': '1', 'resblock_kernel_sizes': [3, 7, 11], 'resblock_dilation_sizes': [[1, 3, 5], [1, 3, 5], [1, 3, 5]], 'upsample_rates': [8, 8, 2, 2], 'upsample_initial_channel': 512, 'upsample_kernel_sizes': [16, 16, 4, 4], 'n_layers_q': 3, 'use_spectral_norm': False, 'gin_channels': 256}}
+        self.speakers = "Male 1,Male 2,Male 3,Male 4 (Malayalam),Male 5,Male 6,Male 7,Male 8 (Kannada),Female 1 (Tamil),Male 9 (Kannada),Female 2 (Marathi),Female 3 (Marathi),Female 4 (Marathi),Female 5 (Telugu),Female 6 (Telugu),Male 10 (Kannada),Male 11 (Kannada),Male 12,Male 13,Male 14,Male 15,Female 7,Male 16 (Malayalam),Male 17 (Tamil),Male 18 (Hindi),Male 19 (Telugu),Male 20 (Hindi)".split(",")
+        self.symbol_to_id = {s:i for i, s in enumerate("_,।,ँ,ं,ः,अ,आ,इ,ई,उ,ऊ,ऋ,ए,ऐ,ओ,औ,क,ख,ग,घ,ङ,च,छ,ज,झ,ञ,ट,ठ,ड,ढ,ण,त,थ,द,ध,न,प,फ,ब,भ,म,य,र,ल,ळ,व,श,ष,स,ह,ऽ,ा,ि,ी,ु,ू,ृ,ॄ,े,ै,ो,ौ,्,ॠ,ॢ, ".split(","))}
+        self.synthesizer = SynthesizerTrn(len(self.symbol_to_id),conf["filter_length"] // 2 + 1,conf["segment_size"] // conf["hop_length"],n_speakers=len(self.speakers),**conf["model"])
 
+    def text_to_sequence(self, text: str) -> torch.Tensor:
+        seq = []
+        for c in text:
+            if c in self.symbol_to_id:
+                seq.append(self.symbol_to_id[c])
+        if len(seq) == 0 or seq[-1] != self.symbol_to_id['।']:
+            seq.append(self.symbol_to_id['।'])
+        return torch.tensor(seq, dtype=torch.long)
 
-def slice_segments(x, ids_str, segment_size=4):
-  ret = torch.zeros_like(x[:, :, :segment_size])
-  for i in range(x.size(0)):
-    idx_str = ids_str[i]
-    idx_end = idx_str + segment_size
-    ret[i] = x[i, :, idx_str:idx_end]
-  return ret
-
-
-def rand_slice_segments(x, x_lengths=None, segment_size=4):
-  b, d, t = x.size()
-  if x_lengths is None:
-    x_lengths = t
-  ids_str_max = x_lengths - segment_size + 1
-  ids_str = (torch.rand([b]).to(device=x.device) * ids_str_max).to(dtype=torch.long)
-  ret = slice_segments(x, ids_str, segment_size)
-  return ret, ids_str
-
-
-def subsequent_mask(length):
-  mask = torch.tril(torch.ones(length, length)).unsqueeze(0).unsqueeze(0)
-  return mask
-
-
-@torch.jit.script
-def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
-  n_channels_int = n_channels[0]
-  in_act = input_a + input_b
-  t_act = torch.tanh(in_act[:, :n_channels_int, :])
-  s_act = torch.sigmoid(in_act[:, n_channels_int:, :])
-  acts = t_act * s_act
-  return acts
-
-
-def convert_pad_shape(pad_shape):
-  l = pad_shape[::-1]
-  pad_shape = [item for sublist in l for item in sublist]
-  return pad_shape
-
-
-def sequence_mask(length, max_length=None):
-  if max_length is None:
-    max_length = length.max()
-  x = torch.arange(max_length, dtype=length.dtype, device=length.device)
-  return x.unsqueeze(0) < length.unsqueeze(1)
-
-
-def generate_path(duration, mask):
-  """
-  duration: [b, 1, t_x]
-  mask: [b, 1, t_y, t_x]
-  """
-  device = duration.device
-  
-  b, _, t_y, t_x = mask.shape
-  cum_duration = torch.cumsum(duration, -1)
-  
-  cum_duration_flat = cum_duration.view(b * t_x)
-  path = sequence_mask(cum_duration_flat, t_y).to(mask.dtype)
-  path = path.view(b, t_x, t_y)
-  path = path - F.pad(path, convert_pad_shape([[0, 0], [1, 0], [0, 0]]))[:, :-1]
-  path = path.unsqueeze(1).transpose(2,3) * mask
-  return path
-
-
-def sanskrit_cleaners(text):
-    if len(text)==0 or text[-1] != '।':
-        text += ' ।'
-    return text
-
-class SansTTS(SynthesizerTrn):
-  def __init__(self,model_path,device):
-    self.conf = {'train': {'segment_size': 8192}, 'data': {'max_wav_value': 32768.0, 'sampling_rate': 22050, 'filter_length': 1024, 'hop_length': 256, 'win_length': 1024, 'add_blank': True, 'n_speakers': 27}, 'model': {'inter_channels': 192, 'hidden_channels': 192, 'filter_channels': 768, 'n_heads': 2, 'n_layers': 6, 'kernel_size': 3, 'p_dropout': 0.1, 'resblock': '1', 'resblock_kernel_sizes': [3, 7, 11], 'resblock_dilation_sizes': [[1, 3, 5], [1, 3, 5], [1, 3, 5]], 'upsample_rates': [8, 8, 2, 2], 'upsample_initial_channel': 512, 'upsample_kernel_sizes': [16, 16, 4, 4], 'n_layers_q': 3, 'use_spectral_norm': False, 'gin_channels': 256}, 'speakers': ['Male 1', 'Male 2', 'Male 3', 'Male 4 (Malayalam)', 'Male 5', 'Male 6', 'Male 7', 'Male 8 (Kannada)', 'Female 1 (Tamil)', 'Male 9 (Kannada)', 'Female 2 (Marathi)', 'Female 3 (Marathi)', 'Female 4 (Marathi)', 'Female 5 (Telugu)', 'Female 6 (Telugu)', 'Male 10 (Kannada)', 'Male 11 (Kannada)', 'Male 12', 'Male 13', 'Male 14', 'Male 15', 'Female 7', 'Male 16 (Malayalam)', 'Male 17 (Tamil)', 'Male 18 (Hindi)', 'Male 19 (Telugu)', 'Male 20 (Hindi)'], 'symbols': ['_', '।', 'ँ', 'ं', 'ः', 'अ', 'आ', 'इ', 'ई', 'उ', 'ऊ', 'ऋ', 'ए', 'ऐ', 'ओ', 'औ', 'क', 'ख', 'ग', 'घ', 'ङ', 'च', 'छ', 'ज', 'झ', 'ञ', 'ट', 'ठ', 'ड', 'ढ', 'ण', 'त', 'थ', 'द', 'ध', 'न', 'प', 'फ', 'ब', 'भ', 'म', 'य', 'र', 'ल', 'ळ', 'व', 'श', 'ष', 'स', 'ह', 'ऽ', 'ा', 'ि', 'ी', 'ु', 'ू', 'ृ', 'ॄ', 'े', 'ै', 'ो', 'ौ', '्', 'ॠ', 'ॢ', ' ']}
-    self.symbol_to_id = {s: i for i, s in enumerate(self.conf["symbols"])}
-    super().__init__(len(self.symbol_to_id),self.conf["data"]["filter_length"] // 2 + 1,self.conf["train"]["segment_size"] // self.conf["data"]["hop_length"],n_speakers=self.conf["data"]["n_speakers"],**self.conf["model"])
-    self.load_state_dict(torch.load(model_path, map_location='cpu'))
-    self.to(device)
-    self.eval()
-    self.speakers = self.conf["speakers"]
-
-  def get_text(self,text):
-    text_norm = [self.symbol_to_id[symbol] for symbol in sanskrit_cleaners(text.replace('\n', '').replace('॥', '।').replace('ॐ', 'ओम्')) if symbol in self.symbol_to_id]
-    if self.conf["data"]["add_blank"]:
-        text_norm = intersperse(text_norm, 0)
-    return text_norm
-
-  def predict(self,text:str, speaker_id=0, length_scale=1.0,save_path="output.wav"):
-      stn_tst = LongTensor(self.get_text(text))
-      with torch.no_grad():
-          audio = self.infer(stn_tst.unsqueeze(0),LongTensor([stn_tst.size(0)]),LongTensor([speaker_id]),0.667,1/length_scale,0.8)[0][0, 0].data.cpu().float().numpy()
-      sf.write(save_path, audio, self.conf["data"]["sampling_rate"])
-      return save_path
+    def forward(self, text: str, speaker_id: int = 0, length_scale: float = 1.0) -> torch.Tensor:
+        seq = self.text_to_sequence(text)
+        stn_tst = intersperse_tensor(seq, 0).unsqueeze(0)  # Add batch dim
+        lengths = torch.tensor([stn_tst.size(1)], dtype=torch.long, device=stn_tst.device)
+        speakers = torch.tensor([speaker_id], dtype=torch.long, device=stn_tst.device)
+        return self.synthesizer.forward(stn_tst, lengths, speakers, 0.667, 1/length_scale, 0.8)[0][0, 0]
