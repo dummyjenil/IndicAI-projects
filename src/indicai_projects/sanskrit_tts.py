@@ -1492,11 +1492,6 @@ class SynthesizerTrn(nn.Module):
 
 
 
-def intersperse_tensor(lst: torch.Tensor, item: int) -> torch.Tensor:
-    n = lst.size(0)
-    result = torch.full((2 * n + 1,), item, dtype=torch.long, device=lst.device)
-    result[1::2] = lst
-    return result
 
 class SansTTS(nn.Module):
     def __init__(self,device="cpu"):
@@ -1517,9 +1512,16 @@ class SansTTS(nn.Module):
             seq.append(self.symbol_to_id['।'])
         return torch.tensor(seq, dtype=torch.long)
 
-    def forward(self, text: str, speaker: str = "Male 1", length_scale: float = 1.0) -> torch.Tensor:
-        stn_tst = intersperse_tensor(self.text_to_sequence(text), 0).unsqueeze(0)  # Add batch dim
-        return self.synthesizer.forward(stn_tst, torch.tensor([stn_tst.size(1)], dtype=torch.long, device=stn_tst.device), torch.tensor([self.speakers.index(speaker)], dtype=torch.long, device=stn_tst.device), 0.667, 1/length_scale, 0.8)[0][0, 0]
+    def intersperse_tensor(self,lst: torch.Tensor, item: int) -> torch.Tensor:
+        n = lst.size(0)
+        result = torch.full((2 * n + 1,), item, dtype=torch.long, device=lst.device)
+        result[1::2] = lst
+        return result
+
+    def forward(self, text_seq, speaker_index, length_scale) -> torch.Tensor:
+        stn_tst = self.intersperse_tensor(text_seq, 0).unsqueeze(0)
+        return self.synthesizer.forward(stn_tst, torch.tensor([stn_tst.size(1)], dtype=torch.long, device=stn_tst.device), torch.tensor([speaker_index], dtype=torch.long, device=stn_tst.device), 0.667, 1/length_scale, 0.8)[0][0, 0]
+
     def predict(self, text: str, speaker: str = "Male 1", length_scale: float = 1.0, output_path="output.wav"):
-       sf.write("output.wav", self.forward(text,speaker,length_scale).numpy(), 22050)
+       sf.write(output_path, self.forward(self.text_to_sequence(text),self.speakers.index(speaker),length_scale).numpy(), 22050)
        return output_path
