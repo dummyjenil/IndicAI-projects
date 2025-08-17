@@ -1,4 +1,6 @@
 import math
+from huggingface_hub import hf_hub_download
+import soundfile as sf
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.utils import remove_weight_norm, spectral_norm , parametrizations
@@ -1497,13 +1499,15 @@ def intersperse_tensor(lst: torch.Tensor, item: int) -> torch.Tensor:
     return result
 
 class SansTTS(nn.Module):
-    def __init__(self):
+    def __init__(self,device="cpu"):
         super().__init__()
         conf = {'segment_size': 8192, 'filter_length': 1024, 'hop_length': 256, 'model': {'inter_channels': 192, 'hidden_channels': 192, 'filter_channels': 768, 'n_heads': 2, 'n_layers': 6, 'kernel_size': 3, 'p_dropout': 0.1, 'resblock': '1', 'resblock_kernel_sizes': [3, 7, 11], 'resblock_dilation_sizes': [[1, 3, 5], [1, 3, 5], [1, 3, 5]], 'upsample_rates': [8, 8, 2, 2], 'upsample_initial_channel': 512, 'upsample_kernel_sizes': [16, 16, 4, 4], 'n_layers_q': 3, 'use_spectral_norm': False, 'gin_channels': 256}}
         self.speakers = "Male 1,Male 2,Male 3,Male 4 (Malayalam),Male 5,Male 6,Male 7,Male 8 (Kannada),Female 1 (Tamil),Male 9 (Kannada),Female 2 (Marathi),Female 3 (Marathi),Female 4 (Marathi),Female 5 (Telugu),Female 6 (Telugu),Male 10 (Kannada),Male 11 (Kannada),Male 12,Male 13,Male 14,Male 15,Female 7,Male 16 (Malayalam),Male 17 (Tamil),Male 18 (Hindi),Male 19 (Telugu),Male 20 (Hindi)".split(",")
         self.symbol_to_id = {s:i for i, s in enumerate("_,।,ँ,ं,ः,अ,आ,इ,ई,उ,ऊ,ऋ,ए,ऐ,ओ,औ,क,ख,ग,घ,ङ,च,छ,ज,झ,ञ,ट,ठ,ड,ढ,ण,त,थ,द,ध,न,प,फ,ब,भ,म,य,र,ल,ळ,व,श,ष,स,ह,ऽ,ा,ि,ी,ु,ू,ृ,ॄ,े,ै,ो,ौ,्,ॠ,ॢ, ".split(","))}
         self.synthesizer = SynthesizerTrn(len(self.symbol_to_id),conf["filter_length"] // 2 + 1,conf["segment_size"] // conf["hop_length"],n_speakers=len(self.speakers),**conf["model"])
-
+        self.load_state_dict(torch.load(hf_hub_download("shethjenil/INDIC_TTS","sanskrit_tts_model.pth")))
+        self.to(device)
+        self.eval()
     def text_to_sequence(self, text: str) -> torch.Tensor:
         seq = []
         for c in text:
@@ -1513,9 +1517,13 @@ class SansTTS(nn.Module):
             seq.append(self.symbol_to_id['।'])
         return torch.tensor(seq, dtype=torch.long)
 
-    def forward(self, text: str, speaker_id: int = 0, length_scale: float = 1.0) -> torch.Tensor:
+    def forward(self, text: str, speaker: str = "Male 1", length_scale: float = 1.0) -> torch.Tensor:
+        speaker_id = self.speakers.index(speaker)
         seq = self.text_to_sequence(text)
         stn_tst = intersperse_tensor(seq, 0).unsqueeze(0)  # Add batch dim
         lengths = torch.tensor([stn_tst.size(1)], dtype=torch.long, device=stn_tst.device)
         speakers = torch.tensor([speaker_id], dtype=torch.long, device=stn_tst.device)
         return self.synthesizer.forward(stn_tst, lengths, speakers, 0.667, 1/length_scale, 0.8)[0][0, 0]
+    def predict(self, text: str, speaker: str = "Male 1", length_scale: float = 1.0, output_path="output.wav"):
+       audio = self.forward(text,speaker,length_scale)
+       sf.write("output.wav", audio.numpy(), 22050)
