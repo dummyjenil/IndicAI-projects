@@ -1518,12 +1518,8 @@ class SansTTS(nn.Module):
         return torch.tensor(seq, dtype=torch.long)
 
     def forward(self, text: str, speaker: str = "Male 1", length_scale: float = 1.0) -> torch.Tensor:
-        speaker_id = self.speakers.index(speaker)
-        seq = self.text_to_sequence(text)
-        stn_tst = intersperse_tensor(seq, 0).unsqueeze(0)  # Add batch dim
-        lengths = torch.tensor([stn_tst.size(1)], dtype=torch.long, device=stn_tst.device)
-        speakers = torch.tensor([speaker_id], dtype=torch.long, device=stn_tst.device)
-        return self.synthesizer.forward(stn_tst, lengths, speakers, 0.667, 1/length_scale, 0.8)[0][0, 0]
+        stn_tst = intersperse_tensor(self.text_to_sequence(text), 0).unsqueeze(0)  # Add batch dim
+        return self.synthesizer.forward(stn_tst, torch.tensor([stn_tst.size(1)], dtype=torch.long, device=stn_tst.device), torch.tensor([self.speakers.index(speaker)], dtype=torch.long, device=stn_tst.device), 0.667, 1/length_scale, 0.8)[0][0, 0]
     def predict(self, text: str, speaker: str = "Male 1", length_scale: float = 1.0, output_path="output.wav"):
-       audio = self.forward(text,speaker,length_scale)
-       sf.write("output.wav", audio.numpy(), 22050)
+       sf.write("output.wav", self.forward(text,speaker,length_scale).numpy(), 22050)
+       return output_path
